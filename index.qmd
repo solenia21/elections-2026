@@ -1,0 +1,151 @@
+---
+title: "2026 U.S. House Election Results"
+execute:
+  echo: false
+  message: false
+  warning: false
+---
+
+Nationwide interactive map of all **435 U.S. Congressional Districts** for the November 3, 2026 U.S. House elections. Hover over any district to see its name, winning side, and winner.
+
+```{r}
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(htmltools)
+
+options(tigris_use_cache = TRUE)
+
+# Read 2026 U.S. House results across all 435 districts
+house_results <- read_csv("data/us_house_2026.csv", show_col_types = FALSE)
+
+# Helper to place Alaska (02) and Hawaii (15) into a 270toWin-style bottom-left inset
+place_insets <- \(sf_obj) {
+  proj <- st_transform(sf_obj, 5070)
+  ak <- filter(proj, STATEFP == "02")
+  hi <- filter(proj, STATEFP == "15")
+  conus <- filter(proj, !STATEFP %in% c("02", "15"))
+
+  ak_cent <- st_centroid(st_union(st_geometry(ak)))
+  st_geometry(ak) <- st_sfc(
+    (st_geometry(ak) - ak_cent) * 0.35 + c(-1750000, 420000),
+    crs = 5070
+  )
+
+  hi_cent <- st_centroid(st_union(st_geometry(hi)))
+  st_geometry(hi) <- st_sfc(
+    (st_geometry(hi) - hi_cent) * 1.1 + c(-1020000, 360000),
+    crs = 5070
+  )
+
+  bind_rows(conus, ak, hi) |>
+    st_transform(4326)
+}
+
+# Load 435 congressional district shapes and join 2026 election results
+state_lookup <- fips_codes |>
+  distinct(state_code, state_name)
+
+us_districts <- congressional_districts(
+  cb = TRUE,
+  resolution = "20m",
+  year = 2024,
+  progress_bar = FALSE
+) |>
+  filter(as.numeric(STATEFP) <= 56, STATEFP != "11") |>
+  place_insets() |>
+  left_join(state_lookup, by = c("STATEFP" = "state_code")) |>
+  mutate(
+    cd_num = as.integer(CD119FP),
+    location = if_else(
+      cd_num == 0L,
+      paste(state_name, "at-large"),
+      paste(state_name, cd_num)
+    )
+  ) |>
+  left_join(house_results, by = "location") |>
+  mutate(
+    winning_side = coalesce(winning_side, "Uncalled"),
+    hover_label = sprintf(
+      "<strong>%s</strong><br/>Side: <strong>%s</strong><br/>Winner: %s<br/><span style='color:#555;'>%s</span>",
+      location,
+      winning_side,
+      coalesce(winner, "TBD"),
+      coalesce(status, "")
+    )
+  )
+
+# Load state outlines for crisp state boundaries (non-clickable overlay)
+us_states <- states(cb = TRUE, resolution = "20m", year = 2024, progress_bar = FALSE) |>
+  filter(as.numeric(STATEFP) <= 56, STATEFP != "11") |>
+  place_insets()
+
+# 270toWin-style party color palette
+party_pal <- colorFactor(
+  palette = c("#2166ac", "#b2182b", "#b0b0b0"),
+  levels = c("Democratic", "Republican", "Uncalled")
+)
+
+us_bbox <- st_bbox(us_districts)
+
+# Fixed-zoom nationwide interactive map (no external tile API required)
+leaflet(
+  us_districts,
+  height = "560px",
+  options = leafletOptions(
+    zoomControl = FALSE,
+    scrollWheelZoom = FALSE,
+    doubleClickZoom = FALSE,
+    touchZoom = FALSE,
+    boxZoom = FALSE,
+    keyboard = FALSE,
+    dragging = FALSE,
+    zoomSnap = 0.05
+  )
+) |>
+  fitBounds(
+    lng1 = us_bbox[["xmin"]],
+    lat1 = us_bbox[["ymin"]],
+    lng2 = us_bbox[["xmax"]],
+    lat2 = us_bbox[["ymax"]]
+  ) |>
+  htmlwidgets::onRender("function(el) { el.style.background = '#ffffff'; }") |>
+  addPolygons(
+    fillColor = ~party_pal(winning_side),
+    fillOpacity = 0.88,
+    color = "#ffffff",
+    weight = 0.5,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#111111",
+      fillOpacity = 1,
+      bringToFront = TRUE
+    ),
+    label = map(us_districts$hover_label, HTML),
+    labelOptions = labelOptions(
+      style = list("padding" = "6px 8px"),
+      textsize = "13px",
+      direction = "auto"
+    )
+  ) |>
+  addPolylines(
+    data = us_states,
+    color = "#333333",
+    weight = 1.1,
+    opacity = 0.85,
+    options = pathOptions(clickable = FALSE)
+  ) |>
+  addLegend(
+    colors = c("#2166ac", "#b2182b", "#b0b0b0"),
+    labels = c("Democratic", "Republican", "Uncalled"),
+    title = "2026 U.S. House",
+    opacity = 0.9,
+    position = "bottomright"
+  )
+```
+
+*Source: U.S. Census Bureau (`tigris` congressional district boundaries) and 2026 U.S. House election returns compiled via Wikipedia.*
+
+
+
